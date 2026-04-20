@@ -40,9 +40,133 @@ class PlayConfig:
   play_stage: Literal["default", "match_checkpoint", "easy", "mid", "final"] = "default"
   no_terminations: bool = False
   """Disable all termination conditions (useful for viewing motions with dummy agents)."""
+  print_grasp_contact_force: bool = False
+  """Print left/right grasp contact force during play for diagnostics."""
+  contact_print_interval: int = 10
+  """Number of env steps between force printouts."""
 
   # Internal flag used by demo script.
   _demo_mode: tyro.conf.Suppress[bool] = False
+
+
+class _ContactForceDebugPolicy:
+  """Policy wrapper that periodically prints grasp contact forces."""
+
+  def __init__(
+    self,
+    base_policy,
+    env: ManagerBasedRlEnv,
+    interval: int,
+  ) -> None:
+    self._base_policy = base_policy
+    self._env = env
+    self._interval = max(1, int(interval))
+    self._step = 0
+    self._init_right_z: float | None = None
+    self._init_left_z: float | None = None
+
+  def __call__(self, obs) -> torch.Tensor:
+    action = self._base_policy(obs)
+    if self._step % self._interval == 0:
+      self._print_contact_forces()
+    self._step += 1
+    return action
+
+  def _print_contact_forces(self) -> None:
+    right_force, right_found = self._extract_force_and_found("right_grasp_contact")
+    left_force, left_found = self._extract_force_and_found("left_grasp_contact")
+    right_z = self._extract_object_height("cylinder_right")
+    left_z = self._extract_object_height("cylinder_left")
+    right_status = self._diagnose_hand(
+      hand="right",
+      force=right_force,
+      found=right_found,
+      object_z=right_z,
+    )
+    left_status = self._diagnose_hand(
+      hand="left",
+      force=left_force,
+      found=left_found,
+      object_z=left_z,
+    )
+    print(
+      "[CONTACT] "
+      f"step={self._step:06d} "
+      f"right_force={right_force:7.3f}N right_found={right_found:4.1f} "
+      f"left_force={left_force:7.3f}N left_found={left_found:4.1f} "
+      f"right_z={right_z:6.3f} left_z={left_z:6.3f} "
+      f"right_state={right_status} left_state={left_status}"
+    )
+
+  def _extract_force_and_found(self, sensor_name: str) -> tuple[float, float]:
+    if sensor_name not in self._env.scene.sensors:
+      return float("nan"), float("nan")
+
+    sensor = self._env.scene[sensor_name]
+    data = sensor.data
+    force = getattr(data, "force", None)
+    found = getattr(data, "found", None)
+
+    force_mag = float("nan")
+    if force is not None:
+      # Use env 0 and take max magnitude over slots/geoms as a compact signal.
+      force_env0 = force[0]
+      if force_env0.ndim == 1:
+        force_mag = float(torch.linalg.vector_norm(force_env0).item())
+      else:
+        force_mag = float(torch.linalg.vector_norm(force_env0, dim=-1).max().item())
+
+    found_val = float("nan")
+    if found is not None:
+      found_env0 = found[0]
+      if found_env0.ndim == 0:
+        found_val = float(found_env0.item())
+      else:
+        found_val = float(found_env0.max().item())
+
+    return force_mag, found_val
+
+  def _extract_object_height(self, object_name: str) -> float:
+    if object_name not in self._env.scene.entities:
+      return float("nan")
+    obj = self._env.scene[object_name]
+    return float(obj.data.root_link_pos_w[0, 2].item())
+
+  def _diagnose_hand(
+    self,
+    hand: Literal["right", "left"],
+    force: float,
+    found: float,
+    object_z: float,
+  ) -> str:
+    # Thresholds tuned for quick online diagnostics in play mode.
+    found_th = 0.5
+    weak_force_th = 2.0
+    lift_delta_th = 0.03
+
+    init_z = self._init_right_z if hand == "right" else self._init_left_z
+    if init_z is None and object_z == object_z:  # NaN-safe check.
+      if hand == "right":
+        self._init_right_z = object_z
+      else:
+        self._init_left_z = object_z
+      init_z = object_z
+
+    lift_delta = 0.0
+    if init_z is not None and object_z == object_z:
+      lift_delta = object_z - init_z
+
+    has_contact = (found == found and found >= found_th) or (
+      force == force and force >= weak_force_th
+    )
+
+    if not has_contact:
+      return "碰不到"
+    if force == force and force < weak_force_th:
+      return "夹不住"
+    if lift_delta < lift_delta_th:
+      return "抬不动"
+    return "抬起来"
 
 
 def run_play(task_id: str, cfg: PlayConfig):
@@ -224,6 +348,25 @@ def run_play(task_id: str, cfg: PlayConfig):
       str(resume_path), load_cfg={"actor": True}, strict=True, map_location=device
     )
     policy = runner.get_inference_policy(device=device)
+
+  if cfg.print_grasp_contact_force:
+    scene_sensors = env.unwrapped.scene.sensors
+    required = {"right_grasp_contact", "left_grasp_contact"}
+    if required.issubset(scene_sensors.keys()):
+      policy = _ContactForceDebugPolicy(
+        base_policy=policy,
+        env=env.unwrapped,
+        interval=cfg.contact_print_interval,
+      )
+      print(
+        "[INFO]: Grasp contact force debug enabled "
+        f"(interval={max(1, cfg.contact_print_interval)} steps)"
+      )
+    else:
+      print(
+        "[WARN]: Grasp contact force debug requested, but required sensors "
+        f"are missing. Available sensors: {list(scene_sensors.keys())}"
+      )
 
   # Handle "auto" viewer selection.
   if cfg.viewer == "auto":

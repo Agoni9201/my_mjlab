@@ -51,16 +51,16 @@ def make_lift_cube_env_cfg() -> ManagerBasedRlEnvCfg:
     "cube_to_goal_right": ObservationTermCfg(
       func=manipulation_mdp.object_to_goal_distance,
       params={
-        "object_name": "cube", # 目标物体名称
-        "command_name": "lift_height_right", # 关联的命令名称
+        "object_name": "cube",
+        "command_name": "lift_height_right",
       },
       noise=Unoise(n_min=-0.01, n_max=0.01),
     ),
     "cube_to_goal_left": ObservationTermCfg(
       func=manipulation_mdp.object_to_goal_distance,
       params={
-        "object_name": "cube", # 目标物体名称
-        "command_name": "lift_height_left", # 关联的命令名称
+        "object_name": "cube",
+        "command_name": "lift_height_left",
       },
       noise=Unoise(n_min=-0.01, n_max=0.01),
     ),
@@ -107,7 +107,7 @@ def make_lift_cube_env_cfg() -> ManagerBasedRlEnvCfg:
         z=(0.02, 0.05),
         yaw=(-3.14, 3.14),
       ),
-    ),
+    )
   }
 
   events = {
@@ -163,7 +163,7 @@ def make_lift_cube_env_cfg() -> ManagerBasedRlEnvCfg:
       },
     ),
   }
-
+  # 这些名字你需要在 WA1 的 robot-specific 配置里对应好
   # Collision sensor for end-effector to ground contact.
   ee_ground_collision_cfg = ContactSensorCfg(
     name="ee_ground_collision",
@@ -238,13 +238,13 @@ def make_lift_cube_env_cfg() -> ManagerBasedRlEnvCfg:
 
   terminations = {
     "time_out": TerminationTermCfg(func=mdp.time_out, time_out=True),
-    "right_ee_table_collision": TerminationTermCfg(
+    "right_ee_ground_collision": TerminationTermCfg(
       func=manipulation_mdp.illegal_contact,
-      params={"sensor_name": "right_ee_table_collision", "force_threshold": 10.0},
+      params={"sensor_name": "right_ee_ground_collision", "force_threshold": 10.0},
     ),
-    "left_ee_table_collision": TerminationTermCfg(
+    "left_ee_ground_collision": TerminationTermCfg(
       func=manipulation_mdp.illegal_contact,
-      params={"sensor_name": "left_ee_table_collision", "force_threshold": 10.0},
+      params={"sensor_name": "left_ee_ground_collision", "force_threshold": 10.0},
     ),
   }
 

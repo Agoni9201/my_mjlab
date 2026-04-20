@@ -1,16 +1,18 @@
 from __future__ import annotations
 
-from typing import Literal
-from mjlab.tasks.manipulation.mdp import LiftingCommandCfg
-from typing import cast
+from typing import Literal, cast
+
 import mujoco
 
+from mjlab.tasks.manipulation.mdp import LiftingCommandCfg
 from mjlab.asset_zoo.robots import (
   WA1_D11_MANIPULATION_ACTION_SCALE,
   WA1_FRONT_TABLE_POS,
   WA1_FRONT_TABLE_TOP_SIZE,
   WA1_HAND_CYLINDER_SIZE,
+  WA1_LEFT_ARM_JOINT_NAMES,
   WA1_RIGHT_GRASP_SITE_NAME,
+  WA1_RIGHT_ARM_JOINT_NAMES,
   WA1_LEFT_GRASP_SITE_NAME,
   WA1_TRACK_JOINT_NAMES,
   WA1_TORSO_JOINT_NAMES,
@@ -38,48 +40,57 @@ _CYLINDER_CENTER_Z = _TABLE_TOP_SURFACE_Z + _CYLINDER_HALF_LENGTH
 _OBJECT_X_RANGE = (0.64, 0.74)
 _OBJECT_Y_RIGHT_RANGE = (-0.14, -0.04)
 _OBJECT_Y_LEFT_RANGE = (0.04, 0.14)
+
 _TARGET_X_RANGE = (0.60, 0.70)
 _TARGET_Y_RIGHT_RANGE = (-0.12, -0.04)
 _TARGET_Y_LEFT_RANGE = (0.04, 0.12)
+
 _OBJECT_X_RANGE_EASY = (0.66, 0.72)
 _OBJECT_X_RANGE_MID = (0.65, 0.73)
 _OBJECT_Y_RIGHT_RANGE_EASY = (-0.10, -0.06)
 _OBJECT_Y_LEFT_RANGE_EASY = (0.06, 0.10)
 _OBJECT_Y_RIGHT_RANGE_MID = (-0.12, -0.05)
 _OBJECT_Y_LEFT_RANGE_MID = (0.05, 0.12)
+
 _TARGET_X_RANGE_EASY = (0.61, 0.67)
 _TARGET_X_RANGE_MID = (0.60, 0.69)
 _TARGET_Y_RIGHT_RANGE_EASY = (-0.09, -0.06)
-_TARGET_Y_LEFT_RANGE_EASY = (0.06, 0.09)  
+_TARGET_Y_LEFT_RANGE_EASY = (0.06, 0.09)
 _TARGET_Y_RIGHT_RANGE_MID = (-0.10, -0.05)
 _TARGET_Y_LEFT_RANGE_MID = (0.05, 0.10)
+
 _TARGET_Z_RANGE_EASY = (_CYLINDER_CENTER_Z + 0.08, _CYLINDER_CENTER_Z + 0.11)
 _TARGET_Z_RANGE_MID = (_CYLINDER_CENTER_Z + 0.15, _CYLINDER_CENTER_Z + 0.18)
 _TARGET_Z_RANGE = (_CYLINDER_CENTER_Z + 0.17, _CYLINDER_CENTER_Z + 0.20)
 
 
-def _controlled_joint_cfg() -> SceneEntityCfg: # 受控关节
+def _controlled_joint_cfg() -> SceneEntityCfg:
   return SceneEntityCfg("robot", joint_names=WA1_TRACK_JOINT_NAMES)
 
 
-def _grasp_site_right_cfg() -> SceneEntityCfg:  # 抓取点
+def _grasp_site_right_cfg() -> SceneEntityCfg:
   return SceneEntityCfg("robot", site_names=(WA1_RIGHT_GRASP_SITE_NAME,))
 
-
-def _grasp_site_left_cfg() -> SceneEntityCfg:  # 抓取点
+def _grasp_site_left_cfg() -> SceneEntityCfg:
   return SceneEntityCfg("robot", site_names=(WA1_LEFT_GRASP_SITE_NAME,))
 
-
-def _torso_joint_cfg() -> SceneEntityCfg: # 躯干关节配置
+def _torso_joint_cfg() -> SceneEntityCfg:
   return SceneEntityCfg("robot", joint_names=WA1_TORSO_JOINT_NAMES)
 
-# 分阶段改写lift命令的参数，逐步增加难度 课程学习的核心调参接口
+def _right_arm_joint_cfg() -> SceneEntityCfg:
+  return SceneEntityCfg("robot", joint_names=WA1_RIGHT_ARM_JOINT_NAMES)
+
+
+def _left_arm_joint_cfg() -> SceneEntityCfg:
+  return SceneEntityCfg("robot", joint_names=WA1_LEFT_ARM_JOINT_NAMES)
+
+
 def apply_wa1_d11_grasp_cylinder_stage(
   cfg: ManagerBasedRlEnvCfg,
   stage: Literal["easy", "mid", "final"],
   command_name: str = "lift_height_right",
 ) -> None:
-  lift_cmd = cfg.commands[command_name]
+  lift_cmd = cast(LiftingCommandCfg, cfg.commands[command_name])
 
   if command_name == "lift_height_right":
     y_target = {
@@ -105,7 +116,7 @@ def apply_wa1_d11_grasp_cylinder_stage(
     }
   else:
     raise ValueError(f"Unsupported command_name: {command_name}")
-
+  
   if stage == "easy":
     lift_cmd.success_threshold = 0.10
     lift_cmd.target_position_range.x = _TARGET_X_RANGE_EASY
@@ -125,20 +136,19 @@ def apply_wa1_d11_grasp_cylinder_stage(
   else:
     lift_cmd.success_threshold = 0.04
     lift_cmd.target_position_range.x = _TARGET_X_RANGE
-    lift_cmd.target_position_range.y = y_target["final"]
+    lift_cmd.target_position_range.y = y_target["final"]  
     lift_cmd.target_position_range.z = _TARGET_Z_RANGE
     lift_cmd.object_pose_range.x = _OBJECT_X_RANGE
     lift_cmd.object_pose_range.y = y_object["final"]
     lift_cmd.object_pose_range.yaw = (-0.4, 0.4)
+  lift_cmd.object_pose_range.z = (_CYLINDER_CENTER_Z, _CYLINDER_CENTER_Z)
 
-  lift_cmd.object_pose_range.z = (_CYLINDER_CENTER_Z, _CYLINDER_CENTER_Z) # 物体初始高度固定 
 
-# 设置圆柱体规格，作为环境中的可操作物体
 def get_table_cylinder_spec() -> mujoco.MjSpec:
   spec = mujoco.MjSpec()
   body = spec.worldbody.add_body(name="table_cylinder")
   joint = body.add_freejoint(name="table_cylinder_joint")
-  joint.damping = 0.05
+  joint.damping = 0.5
   joint.armature = 0.001
   geom = body.add_geom(
     name="table_cylinder_geom",
@@ -148,13 +158,11 @@ def get_table_cylinder_spec() -> mujoco.MjSpec:
     rgba=(0.88, 0.24, 0.18, 1.0),
   )
   geom.quat[:] = (1.0, 0.0, 0.0, 0.0)
-  geom.friction[:] = (0.6, 0.01, 0.001) # 1.2是滑动摩擦，0.02是滚动摩擦，0.002是粘着摩擦
-  # geom.contype = 8
-  # geom.conaffinity = 2
+  geom.friction[:] = (0.6, 0.01, 0.001)
   geom.condim = 4
   return spec
 
-# 桌面支撑物
+
 def get_table_support_spec() -> mujoco.MjSpec:
   spec = mujoco.MjSpec()
   body = spec.worldbody.add_body(name="table_support")
@@ -164,11 +172,11 @@ def get_table_support_spec() -> mujoco.MjSpec:
     size=WA1_FRONT_TABLE_TOP_SIZE,
     rgba=(0.0, 0.0, 0.0, 0.0),
   )
-  geom.friction[:] = (0.5, 0.01, 0.001)
+  geom.friction[:] = (1.0, 0.02, 0.002)
   geom.condim = 4
   return spec
 
-# 主函数
+
 def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg = make_lift_cube_env_cfg()
 
@@ -185,7 +193,7 @@ def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.scene.entities["robot"].articulation.soft_joint_pos_limit_factor = 1.0
   cfg.scene.terrain = None
   cfg.scene.num_envs = 1 if play else 1024
-  # 检测右手末端和桌面之间的碰撞 重置条件
+
   right_ee_table_collision_cfg = ContactSensorCfg(
     name="right_ee_table_collision",
     primary=ContactMatch(mode="subtree", pattern="WRIST_FLANGE_R", entity="robot"),
@@ -195,7 +203,7 @@ def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     num_slots=1,
     history_length=4,
   )
-  right_grasp_contact_cfg = ContactSensorCfg( # 右手末端和圆柱之间的碰撞  奖励项
+  right_grasp_contact_cfg = ContactSensorCfg(
     name="right_grasp_contact",
     primary=ContactMatch(mode="subtree", pattern="WRIST_FLANGE_R", entity="robot"),
     secondary=ContactMatch(mode="geom", pattern="table_cylinder_geom", entity="cylinder_right"),
@@ -203,7 +211,7 @@ def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     reduce="maxforce",
     num_slots=1,
   )
-  left_ee_table_collision_cfg = ContactSensorCfg( # 左手和桌面之间的碰撞  重置条件
+  left_ee_table_collision_cfg = ContactSensorCfg(
     name="left_ee_table_collision",
     primary=ContactMatch(mode="subtree", pattern="WRIST_FLANGE_L", entity="robot"),
     secondary=ContactMatch(mode="geom", pattern="table_support_top", entity="table_support"),
@@ -212,7 +220,7 @@ def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     num_slots=1,
     history_length=4,
   )
-  left_grasp_contact_cfg = ContactSensorCfg( # 左手末端和圆柱之间的碰撞  奖励项
+  left_grasp_contact_cfg = ContactSensorCfg(
     name="left_grasp_contact",
     primary=ContactMatch(mode="subtree", pattern="WRIST_FLANGE_L", entity="robot"),
     secondary=ContactMatch(mode="geom", pattern="table_cylinder_geom", entity="cylinder_left"),
@@ -220,12 +228,14 @@ def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     reduce="maxforce",
     num_slots=1,
   )
-  cfg.scene.sensors = ( # 把四个传感器添加到环境配置中
+
+  cfg.scene.sensors = (
     right_ee_table_collision_cfg,
     right_grasp_contact_cfg,
     left_ee_table_collision_cfg,
     left_grasp_contact_cfg,
   )
+
 
   joint_pos_action = cfg.actions["joint_pos"]
   assert isinstance(joint_pos_action, JointPositionActionCfg)
@@ -233,34 +243,23 @@ def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   joint_pos_action.scale = WA1_D11_MANIPULATION_ACTION_SCALE
 
   cfg.commands["lift_height_right"].entity_name = "cylinder_right"
-  cfg.commands["lift_height_right"].difficulty = "dynamic"
-  cfg.commands["lift_height_right"].resampling_time_range = (20.0, 20.0)
-  cfg.commands["lift_height_right"].grasp_sensor_name = "right_grasp_contact"
-  # cfg.commands["lift_height_right"].grasp_min_force = 0.2
-  # cfg.commands["lift_height_right"].pregrasp_offset_x = -0.02
-  # cfg.commands["lift_height_right"].pregrasp_offset_y = -0.05
-  # cfg.commands["lift_height_right"].pregrasp_offset_z = 0.01
-  # cfg.commands["lift_height_right"].latch_grasp = True
-  apply_wa1_d11_grasp_cylinder_stage(cfg, "easy", command_name="lift_height_right")
-  
   cfg.commands["lift_height_left"].entity_name = "cylinder_left"
+  cfg.commands["lift_height_right"].difficulty = "dynamic"
   cfg.commands["lift_height_left"].difficulty = "dynamic"
+  cfg.commands["lift_height_right"].resampling_time_range = (20.0, 20.0)
   cfg.commands["lift_height_left"].resampling_time_range = (20.0, 20.0)
-  cfg.commands["lift_height_left"].grasp_sensor_name = "left_grasp_contact"
-  # cfg.commands["lift_height_left"].grasp_min_force = 0.2
-  # cfg.commands["lift_height_left"].pregrasp_offset_x = -0.02
-  # cfg.commands["lift_height_left"].pregrasp_offset_y = 0.05
-  # cfg.commands["lift_height_left"].pregrasp_offset_z = 0.01
-  # cfg.commands["lift_height_left"].latch_grasp = True
+  apply_wa1_d11_grasp_cylinder_stage(cfg, "easy", command_name="lift_height_right")
   apply_wa1_d11_grasp_cylinder_stage(cfg, "easy", command_name="lift_height_left")
 
   for obs_group_name in ("actor", "critic"):
     obs_group = cfg.observations[obs_group_name]
     obs_group.terms["joint_pos"].params["asset_cfg"] = _controlled_joint_cfg()
     obs_group.terms["joint_vel"].params["asset_cfg"] = _controlled_joint_cfg()
+    
     obs_group.terms["ee_to_cube_right"].params["object_name"] = "cylinder_right"
     obs_group.terms["ee_to_cube_right"].params["asset_cfg"] = _grasp_site_right_cfg()
     obs_group.terms["cube_to_goal_right"].params["object_name"] = "cylinder_right"
+    
     obs_group.terms["ee_to_cube_left"].params["object_name"] = "cylinder_left"
     obs_group.terms["ee_to_cube_left"].params["asset_cfg"] = _grasp_site_left_cfg()
     obs_group.terms["cube_to_goal_left"].params["object_name"] = "cylinder_left"
@@ -271,13 +270,14 @@ def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.observations["actor"].terms["joint_vel"].noise = Unoise(
     n_min=-0.08, n_max=0.08
   )
+
   cfg.observations["actor"].terms["ee_to_cube_right"].noise = Unoise(
     n_min=-0.005, n_max=0.005
   )
-  cfg.observations["actor"].terms["ee_to_cube_left"].noise = Unoise(
+  cfg.observations["actor"].terms["cube_to_goal_right"].noise = Unoise(
     n_min=-0.005, n_max=0.005
   )
-  cfg.observations["actor"].terms["cube_to_goal_right"].noise = Unoise(
+  cfg.observations["actor"].terms["ee_to_cube_left"].noise = Unoise(
     n_min=-0.005, n_max=0.005
   )
   cfg.observations["actor"].terms["cube_to_goal_left"].noise = Unoise(
@@ -288,38 +288,19 @@ def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     params={"asset_cfg": _grasp_site_right_cfg()},
     noise=Unoise(n_min=-0.02, n_max=0.02),
   )
-  cfg.observations["critic"].terms["ee_velocity_right"] = ObservationTermCfg(
-    func=manipulation_mdp.ee_velocity,
-    params={"asset_cfg": _grasp_site_right_cfg()},
-  )
   cfg.observations["actor"].terms["ee_velocity_left"] = ObservationTermCfg(
     func=manipulation_mdp.ee_velocity,
     params={"asset_cfg": _grasp_site_left_cfg()},
     noise=Unoise(n_min=-0.02, n_max=0.02),
   )
+  cfg.observations["critic"].terms["ee_velocity_right"] = ObservationTermCfg(
+    func=manipulation_mdp.ee_velocity,
+    params={"asset_cfg": _grasp_site_right_cfg()},
+  )
   cfg.observations["critic"].terms["ee_velocity_left"] = ObservationTermCfg(
     func=manipulation_mdp.ee_velocity,
     params={"asset_cfg": _grasp_site_left_cfg()},
   )
-  # 新增观测：物体的四元数和局部z轴在世界系中的方向
-  # cfg.observations["actor"].terms["cylinder_axis_right"] = ObservationTermCfg(
-  #   func=manipulation_mdp.quat_rotate,
-  #   params={"object_name": "cylinder_right"},
-  #   noise=Unoise(n_min=-0.01, n_max=0.01),
-  # )
-  # cfg.observations["critic"].terms["cylinder_axis_right"] = ObservationTermCfg(
-  #   func=manipulation_mdp.quat_rotate,
-  #   params={"object_name": "cylinder_right"},
-  # )
-  # cfg.observations["actor"].terms["cylinder_axis_left"] = ObservationTermCfg(
-  #   func=manipulation_mdp.quat_rotate,
-  #   params={"object_name": "cylinder_left"},
-  #   noise=Unoise(n_min=-0.01, n_max=0.01),
-  # )
-  # cfg.observations["critic"].terms["cylinder_axis_left"] = ObservationTermCfg(
-  #   func=manipulation_mdp.quat_rotate,
-  #   params={"object_name": "cylinder_left"},
-  # )
 
   cfg.events["reset_robot_joints"].params["asset_cfg"] = _controlled_joint_cfg()
   cfg.events["reset_robot_joints"].params["position_range"] = (-0.02, 0.02)
@@ -353,6 +334,7 @@ def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "start_height": _CYLINDER_CENTER_Z,
     },
   )
+
   cfg.rewards["lift_left"].params["object_name"] = "cylinder_left"
   cfg.rewards["lift_left"].params["asset_cfg"] = _grasp_site_left_cfg()
   cfg.rewards["lift_left"].params["reaching_std"] = 0.14
@@ -370,6 +352,7 @@ def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "start_height": _CYLINDER_CENTER_Z,
     },
   )
+
   cfg.rewards["right_grasp_contact"] = RewardTermCfg(
     func=manipulation_mdp.contact_force_reward,
     weight=1.5,
@@ -388,6 +371,7 @@ def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "min_force": 0.3,
     },
   )
+
   cfg.rewards["joint_pos_limits"].params["asset_cfg"] = _controlled_joint_cfg()
   cfg.rewards["joint_vel_hinge"].func = manipulation_mdp.joint_velocity_hinge_penalty_clipped
   cfg.rewards["joint_vel_hinge"].params["asset_cfg"] = _controlled_joint_cfg()
@@ -412,18 +396,21 @@ def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
     func=manipulation_mdp.illegal_contact,
     params={"sensor_name": "left_ee_table_collision", "force_threshold": 15.0},
   )
+  cfg.terminations.pop("right_ee_ground_collision", None)
+  cfg.terminations.pop("left_ee_ground_collision", None)
+
   cfg.terminations["object_drop_right"] = TerminationTermCfg(
     func=manipulation_mdp.object_below_height,
     params={
       "object_name": "cylinder_right",
-      "min_height": _TABLE_TOP_SURFACE_Z - 0.01,# 圆柱掉落到桌面以下1cm处就算失败  重置条件
+      "min_height": _TABLE_TOP_SURFACE_Z - 0.10,
     },
   )
   cfg.terminations["object_drop_left"] = TerminationTermCfg(
     func=manipulation_mdp.object_below_height,
     params={
       "object_name": "cylinder_left",
-      "min_height": _TABLE_TOP_SURFACE_Z - 0.01,
+      "min_height": _TABLE_TOP_SURFACE_Z - 0.10,
     },
   )
   cfg.terminations["invalid_object_state_right"] = TerminationTermCfg(
@@ -441,8 +428,6 @@ def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "asset_cfg": _controlled_joint_cfg(),
     },
   )
-
-
   cfg.curriculum = {
     "lift_reward_schedule_right": CurriculumTermCfg(
       func=manipulation_mdp.reward_curriculum,
@@ -573,7 +558,7 @@ def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             },
           },
           {
-            "step": 400 * 24,
+            "step": 800 * 24,
             "success_threshold": 0.05,
             "target_position_range": {
               "x": _TARGET_X_RANGE_MID,
@@ -587,7 +572,7 @@ def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             },
           },
           {
-            "step": 1200 * 24,
+            "step": 2200 * 24,
             "success_threshold": 0.04,
             "target_position_range": {
               "x": _TARGET_X_RANGE,
@@ -623,7 +608,7 @@ def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             },
           },
           {
-            "step": 400 * 24,
+            "step": 800 * 24,
             "success_threshold": 0.05,
             "target_position_range": {
               "x": _TARGET_X_RANGE_MID,
@@ -637,7 +622,7 @@ def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             },
           },
           {
-            "step": 1200 * 24,
+            "step": 2200 * 24,
             "success_threshold": 0.04,
             "target_position_range": {
               "x": _TARGET_X_RANGE,
@@ -664,7 +649,7 @@ def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
   cfg.sim.mujoco.iterations = 20
   cfg.sim.mujoco.ls_iterations = 50
   cfg.sim.mujoco.ccd_iterations = 500
-  cfg.episode_length_s = 12.0
+  cfg.episode_length_s = 20.0
 
   if play:
     cfg.episode_length_s = 20.0

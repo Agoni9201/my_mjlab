@@ -12,7 +12,7 @@ from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 from mjlab.utils.os import update_assets
 
 WA1_D11_XML_ENV_VAR = "MJLAB_WA1_D11_XML"
-_DEFAULT_WA1_D11_XML = Path("/home/robot706/yx/mjlab_v3/src/mjlab/asset_zoo/robots/wa1_d11/xml/WA1_D11.xml")
+_DEFAULT_WA1_D11_XML = Path("/home/robot706/yx/mjlab_v5/src/mjlab/asset_zoo/robots/wa1_d11/xml/WA1_D11.xml")
 
 WA1_TRACK_BODY_NAMES = (
   "BODY",
@@ -78,13 +78,13 @@ WA1_RIGHT_HAND_CYLINDER_GRASP_JOINT_POS = {
   "middle_DIP_R": 0.50,
   "ring_MCP_R": 0.66,
   "ring_PIP_R": 0.92,
-  "ring_DIP_R": 0.70,
+  "ring_DIP_R": 0.5,
   "little_MCP_R": 0.58,
-  "little_PIP_R": 1.08,
+  "little_PIP_R": 0.8,
   "little_DIP_R": 0.58,
   "thumb_CMC_R": 0.83,
-  "thumb_MP_R": -0.14,
-  "thumb_IP_R": 0.62,
+  "thumb_MP_R": -0.1,
+  "thumb_IP_R": 0.5,
 }
 WA1_LEFT_GRASP_SITE_NAME = "grasp_left_site"
 WA1_LEFT_GRASP_SITE_POS = (0.0, -0.03, -0.15)
@@ -106,7 +106,7 @@ _WA1_ATTACHED_HAND_CYLINDERS = (
 )
 _WA1_FRONT_TABLE_BODY_NAME = "wa1_front_table"
 _WA1_FRONT_TABLE_TOP_NAME = "wa1_front_table_top"
-_WA1_FRONT_TABLE_POS = (0.9, 0.0, 0.55)   # 桌面整体高度（下调）
+_WA1_FRONT_TABLE_POS = (0.9, 0.0, 0.55)
 _WA1_FRONT_TABLE_TOP_SIZE = (0.40, 0.60, 0.035)
 _WA1_FRONT_TABLE_TOP_RGBA = (0.62, 0.46, 0.30, 1.0)
 _WA1_FRONT_TABLE_LEG_SIZE = (0.025, 0.025, 0.7)
@@ -176,6 +176,7 @@ _FINGER_JOINTS = (
   "little_PIP_R",
   "little_DIP_R",
 )
+
 # 新增碰撞分组
 # ARM_BODIES = {
 # "SCAPULA_L", "SHOULDER_L", "UPPERARM_L", "FOREARM_L", "WRIST_REVOLUTE_L", "WRIST_UPDOWN_L", "WRIST_FLANGE_L",
@@ -198,7 +199,6 @@ _FINGER_JOINTS = (
 # CT_ARM = 2 # 手臂
 # CT_TORSO = 4 # 身体躯干
 # CT_OBJ = 8 # 操作圆柱
-
 
 _LIFT_ACTUATOR = BuiltinPositionActuatorCfg(
   target_names_expr=("Lifting_Z",),
@@ -340,7 +340,6 @@ def _add_right_grasp_site(spec: mujoco.MjSpec) -> None:
     group=4,
   )
 
-
 def _add_left_grasp_site(spec: mujoco.MjSpec) -> None:
   existing_site_names = {site.name for site in spec.sites}
   if WA1_LEFT_GRASP_SITE_NAME in existing_site_names:
@@ -355,8 +354,6 @@ def _add_left_grasp_site(spec: mujoco.MjSpec) -> None:
     rgba=(0.2, 0.8, 0.2, 0.35),
     group=4,
   )
-
-
 def _add_floor(spec: mujoco.MjSpec) -> None:
   existing_texture_names = {tex.name for tex in spec.textures}
   if _WA1_FLOOR_TEXTURE_NAME not in existing_texture_names:
@@ -371,7 +368,6 @@ def _add_floor(spec: mujoco.MjSpec) -> None:
       width=512,
       height=512,
     )
-
   existing_material_names = {mat.name for mat in spec.materials}
   if _WA1_FLOOR_MATERIAL_NAME not in existing_material_names:
     material = spec.add_material(
@@ -383,11 +379,10 @@ def _add_floor(spec: mujoco.MjSpec) -> None:
     material.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB.value] = (
       _WA1_FLOOR_TEXTURE_NAME
     )
-
   existing_geom_names = {geom.name for geom in spec.geoms}
   if "floor" in existing_geom_names:
     return
-
+  
   floor = spec.worldbody.add_geom(name="floor", type=mujoco.mjtGeom.mjGEOM_PLANE)
   floor.pos[:] = _WA1_FLOOR_POS
   floor.size[:] = _WA1_FLOOR_SIZE
@@ -448,16 +443,16 @@ def get_spec(include_attached_hand_cylinders: bool = True) -> mujoco.MjSpec:
 
   # Replace the XML torque motors with position actuators so tracking can train
   # directly in joint space.
-  spec.actuators.clear() # 清空原有的actuators 执行器
-  _set_locked_joint_targets(    # 锁定一些关节
+  spec.actuators.clear()
+  _set_locked_joint_targets(
     spec,
     # {"Lifting_Z": WA1_LIFT_LOCK_POS, **WA1_FIXED_HAND_JOINT_POS},
     {**WA1_FIXED_HAND_JOINT_POS},
   )
-  if include_attached_hand_cylinders:  # 如果需要添加手部圆柱体
-    _add_attached_hand_cylinders(spec) 
+  if include_attached_hand_cylinders:
+    _add_attached_hand_cylinders(spec)
   _add_floor(spec)
-  _add_front_table(spec) #在抬升任务中不用可视化的桌子了，先注释掉
+  _add_front_table(spec)
 
   # Keep robot-floor contact while disabling expensive self-collision between mesh
   # bodies. The visual meshes are already in group 1 and remain non-collidable.
@@ -473,47 +468,17 @@ def get_spec(include_attached_hand_cylinders: bool = True) -> mujoco.MjSpec:
       geom.contype = 2
       geom.conaffinity = 1
       geom.condim = 3
-    # parent_name = geom.parent.name if geom.parent is not None else ""
-    # if geom.name == "floor" or geom.type == mujoco.mjtGeom.mjGEOM_PLANE:
-    #   geom.contype = CT_ENV
-    #   geom.conaffinity = CT_ARM
-    #   geom.condim = 3
-    #   continue
-    # if geom.name == _WA1_FRONT_TABLE_TOP_NAME:
-    #   geom.contype = CT_ENV
-    #   geom.conaffinity = CT_ARM | CT_OBJ
-    #   geom.condim = 3
-    #   continue
-    # if parent_name in HAND_BODIES:
-    #   geom.contype = CT_ARM
-    #   geom.conaffinity = CT_ENV | CT_OBJ
-    #   geom.condim = 4
-    #   continue
-    # if parent_name in ARM_BODIES:
-    #   geom.contype = CT_ARM
-    #   geom.conaffinity = CT_TORSO | CT_ENV | CT_OBJ  # 表示这个碰撞体会和躯干、环境、物体发生碰撞，但不会和手臂自己发生碰撞
-    #   geom.condim = 4  # 4维接触，包含位置和切向摩擦
-    #   continue
-    # if parent_name in TORSO_BODIES:
-    #   geom.contype = CT_TORSO
-    #   geom.conaffinity = CT_ARM 
-    #   geom.condim = 3
-    #   continue
-
-    # geom.contype = 0
-    # geom.conaffinity = 0
-    # geom.condim = 3
 
   return spec
 
-# 在执行操作任务时，去掉手部圆柱体以免干扰，且添加右手抓取点
+
 def get_wa1_d11_manipulation_spec() -> mujoco.MjSpec:
   spec = get_spec(include_attached_hand_cylinders=False)
   _add_right_grasp_site(spec)
   _add_left_grasp_site(spec)
   return spec
 
-# 关节的幅度系数
+
 def _make_action_scale(
   joint_names: tuple[str, ...], effort_limit: float, stiffness: float
 ) -> dict[str, float]:
@@ -525,7 +490,7 @@ WA1_D11_ACTION_SCALE: dict[str, float] = {}
 # Keep the lifting column fixed at the motion home height. We still route it
 # through the joint position action term so the actuator target stays at the
 # default offset, but a zero action scale prevents the policy from changing it.
-WA1_D11_ACTION_SCALE["Lifting_Z"] = WA1_LIFT_LOCK_POS
+WA1_D11_ACTION_SCALE["Lifting_Z"] = 0.0
 WA1_D11_ACTION_SCALE.update(_make_action_scale(("Waist_Z", "Waist_Y"), 290.0, 250.0))
 WA1_D11_ACTION_SCALE.update(
   _make_action_scale(
@@ -534,14 +499,12 @@ WA1_D11_ACTION_SCALE.update(
 )
 WA1_D11_ACTION_SCALE.update(_make_action_scale(_ELBOW_JOINTS, 31.0, 60.0))
 WA1_D11_ACTION_SCALE.update(_make_action_scale(_WRIST_Z_JOINTS, 25.0, 35.0))
-WA1_D11_ACTION_SCALE.update(_make_action_scale(_WRIST_XY_JOINTS, 25.0, 35.0))
+WA1_D11_ACTION_SCALE.update(_make_action_scale(_WRIST_XY_JOINTS, 16.0, 35.0))
 
 WA1_D11_MANIPULATION_ACTION_SCALE = dict(WA1_D11_ACTION_SCALE)
 WA1_D11_MANIPULATION_ACTION_SCALE["Waist_Z"] *= 0.35
-WA1_D11_MANIPULATION_ACTION_SCALE["Waist_Y"] *= 0.35 
+WA1_D11_MANIPULATION_ACTION_SCALE["Waist_Y"] *= 0.35
 # for _joint_name in WA1_LEFT_ARM_JOINT_NAMES:
-#   WA1_D11_MANIPULATION_ACTION_SCALE[_joint_name] = 0.0
-# for _joint_name in WA1_RIGHT_ARM_JOINT_NAMES:  # 右臂不参与操作任务，直接固定
 #   WA1_D11_MANIPULATION_ACTION_SCALE[_joint_name] = 0.0
 
 WA1_D11_TRACKING_HOME_JOINT_POS = {
@@ -555,13 +518,13 @@ WA1_D11_TRACKING_HOME_JOINT_POS = {
   "Wrist_Z_L": 0.0491,
   "Wrist_Y_L": -0.2541,
   "Wrist_X_L": -0.0264,
-  "Shoulder_Y_R": -0.24,
-  "Shoulder_X_R": -0.76,
-  "Shoulder_Z_R": -0.21,
-  "Elbow_R": -1.118,
-  "Wrist_Z_R": -0.004,
-  "Wrist_Y_R": -0.15,
-  "Wrist_X_R": 0.029,
+  "Shoulder_Y_R": -0.1468,
+  "Shoulder_X_R": -0.7672,
+  "Shoulder_Z_R": -0.2116,
+  "Elbow_R": -1.1176,
+  "Wrist_Z_R": -0.0491,
+  "Wrist_Y_R": -0.2541,
+  "Wrist_X_R": 0.0264,
   **WA1_FIXED_HAND_JOINT_POS,
 }
 

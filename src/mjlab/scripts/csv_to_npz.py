@@ -23,14 +23,6 @@ from mjlab.viewer.offscreen_renderer import OffscreenRenderer
 from mjlab.viewer.viewer_config import ViewerConfig
 
 
-DEFAULT_WA1_D11_XML = (
-  "/home/robot706/yx/mjlab_v3/src/mjlab/asset_zoo/robots/wa1_d11/xml/WA1_D11.xml"
-)
-DEFAULT_WA1_D11_ASSET_DIR = (
-  "/home/robot706/yx/mjlab_v3/src/mjlab/asset_zoo/robots/wa1_d11/xml/meshes"
-)
-
-
 def _build_robot_spec_fn(
   robot_xml: str,
   robot_asset_dir: str | None,
@@ -98,7 +90,6 @@ class MotionLoader:
     output_fps: int,
     device: torch.device | str,
     motion_mode: Literal["floating_base", "fixed_base"],
-    selected_joint_count: int | None = None,
     line_range: tuple[int, int] | None = None,
   ):
     self.motion_file = motion_file
@@ -109,7 +100,6 @@ class MotionLoader:
     self.current_idx = 0
     self.device = device
     self.motion_mode = motion_mode
-    self.selected_joint_count = selected_joint_count
     self.line_range = line_range
     self._load_motion()
     self._interpolate_motion()
@@ -141,21 +131,7 @@ class MotionLoader:
     else:
       self.motion_base_poss_input = None
       self.motion_base_rots_input = None
-      if self.selected_joint_count is None:
-        self.motion_dof_poss_input = motion
-      elif motion.shape[1] == self.selected_joint_count:
-        self.motion_dof_poss_input = motion
-      elif motion.shape[1] == self.selected_joint_count + 7:
-        # Allow fixed-base playback from floating-base CSV files by dropping
-        # [base_pos(3), base_quat_xyzw(4)] columns.
-        self.motion_dof_poss_input = motion[:, 7:]
-      else:
-        raise ValueError(
-          "Invalid CSV column count for fixed_base mode: "
-          f"columns={motion.shape[1]}, "
-          f"expected_joints={self.selected_joint_count}, "
-          f"or expected_joints_plus_base={self.selected_joint_count + 7}."
-        )
+      self.motion_dof_poss_input = motion
 
     self.input_frames = motion.shape[0]
     self.duration = (self.input_frames - 1) * self.input_dt
@@ -310,21 +286,19 @@ def run_sim(
   upload_to_wandb: bool,
   renderer: OffscreenRenderer | None = None,
 ):
-  robot: Entity = scene["robot"]
-  if joint_names is None:
-    joint_names = tuple(robot.joint_names)
-  robot_joint_indexes = robot.find_joints(joint_names, preserve_order=True)[0]
-
   motion = MotionLoader(
     motion_file=input_file,
     input_fps=input_fps,
     output_fps=output_fps,
     device=sim.device,
     motion_mode=motion_mode,
-    selected_joint_count=len(robot_joint_indexes),
     line_range=line_range,
   )
 
+  robot: Entity = scene["robot"]
+  if joint_names is None:
+    joint_names = tuple(robot.joint_names)
+  robot_joint_indexes = robot.find_joints(joint_names, preserve_order=True)[0]
   if motion.motion_dof_poss_input.shape[1] != len(robot_joint_indexes):
     raise ValueError(
       "CSV joint dimension does not match selected robot joints: "
@@ -496,18 +470,18 @@ def run_sim(
 
 def main(
   input_file: str,
-  output_name: str | None = "motions",
+  output_name: str | None = None,
   output_file: str = "/tmp/motion.npz",
   output_video: str | None = None,
   input_fps: float = 30.0,
   output_fps: float = 50.0,
   device: str = "cuda:0",
-  render: bool = True,
+  render: bool = False,
   line_range: tuple[int, int] | None = None,
-  robot_xml: str | None = DEFAULT_WA1_D11_XML,
-  robot_asset_dir: str | None = DEFAULT_WA1_D11_ASSET_DIR,
+  robot_xml: str | None = None,
+  robot_asset_dir: str | None = None,
   joint_names: tuple[str, ...] | None = None,
-  motion_mode: Literal["floating_base", "fixed_base"] = "fixed_base",
+  motion_mode: Literal["floating_base", "fixed_base"] = "floating_base",
   upload_to_wandb: bool = True,
   viewer_distance: float | None = None,
   viewer_elevation: float = -18.0,
@@ -527,14 +501,13 @@ def main(
     device: Device to use.
     render: Whether to render the simulation and save a video.
     line_range: Range of lines to process from the CSV file.
-    robot_xml: MuJoCo XML path. Defaults to the WA1_D11 XML used for your
-      fixed-base conversion workflow.
-    robot_asset_dir: Asset directory override. Defaults to the WA1_D11 mesh
-      directory.
+    robot_xml: Optional MuJoCo XML path for a custom robot. When omitted, uses the
+      built-in Unitree G1 tracking scene.
+    robot_asset_dir: Optional asset directory override for custom robot meshes.
     joint_names: Joint names to read from the CSV, in order. Defaults to all robot
       joints in natural MuJoCo order.
     motion_mode: Whether the CSV stores [base pos, base quat_xyzw, joints] or the
-      full fixed-base qpos vector. Defaults to fixed_base.
+      full fixed-base qpos vector.
     upload_to_wandb: Whether to upload the generated NPZ to a WandB registry.
     viewer_distance: Camera distance for the preview renderer. Defaults to an
       extent-scaled distance based on the robot model.

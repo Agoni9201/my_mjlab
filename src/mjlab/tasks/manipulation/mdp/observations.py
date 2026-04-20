@@ -10,7 +10,6 @@ from mjlab.sensor import CameraSensor
 from mjlab.tasks.manipulation.mdp.commands import LiftingCommand
 from mjlab.utils.lab_api.math import quat_apply, quat_inv
 
-
 if TYPE_CHECKING:
   from mjlab.envs import ManagerBasedRlEnv
 
@@ -25,7 +24,7 @@ def ee_to_object_distance(
   """Distance vector from end effector to object in base frame."""
   robot: Entity = env.scene[asset_cfg.name]
   obj: Entity = env.scene[object_name]
-  ee_pos_w = robot.data.site_pos_w[:, asset_cfg.site_ids].squeeze(1) # 末端到物体向量 世界坐标系
+  ee_pos_w = robot.data.site_pos_w[:, asset_cfg.site_ids].squeeze(1)
   obj_pos_w = obj.data.root_link_pos_w
   distance_vec_w = obj_pos_w - ee_pos_w
   base_quat_w = robot.data.root_link_quat_w
@@ -47,12 +46,12 @@ def object_to_goal_distance(
     )
   robot: Entity = env.scene[asset_cfg.name]
   obj: Entity = env.scene[object_name]
-  obj_pos_w = obj.data.root_link_pos_w # 物体位置 世界坐标系
-  goal_pos_w = command.target_pos  # 目标位置 世界坐标系
+  obj_pos_w = obj.data.root_link_pos_w
+  goal_pos_w = command.target_pos
   distance_vec_w = goal_pos_w - obj_pos_w
   base_quat_w = robot.data.root_link_quat_w
-  distance_vec_b = quat_apply(quat_inv(base_quat_w), distance_vec_w) # 转换到基座坐标系
-  return torch.nan_to_num(distance_vec_b) # 处理NaN值，返回距离向量
+  distance_vec_b = quat_apply(quat_inv(base_quat_w), distance_vec_w)
+  return torch.nan_to_num(distance_vec_b)
 
 
 def ee_velocity(
@@ -110,24 +109,3 @@ def camera_depth(
   depth_data = depth_data.permute(0, 3, 1, 2)  # (B, 1, H, W)
   depth_data_clipped = torch.clamp(depth_data, min=min_depth, max=cutoff_distance)
   return torch.clamp(depth_data_clipped / cutoff_distance, 0.0, 1.0)
-
-
-# # 增加的观测
-# # 增加物体的四元数
-# def object_root_quat(env, object_name: str) -> torch.Tensor:
-#     obj = env.scene[object_name]
-#     quat_w = obj.data.root_link_quat_w
-#     return torch.nan_to_num(quat_w)
-
-# # 增加物体局部 z 轴在世界系中的方向
-# def quat_rotate(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-#     """
-#     Rotate vector v by quaternion q.
-#     q: (N,4) -> (w,x,y,z)
-#     v: (N,3)
-#     """
-#     q_w = q[:, 0]
-#     q_xyz = q[:, 1:]
-
-#     t = 2.0 * torch.cross(q_xyz, v, dim=-1)
-#     return v + q_w.unsqueeze(-1) * t + torch.cross(q_xyz, t, dim=-1)
