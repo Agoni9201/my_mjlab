@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Literal, cast
 
 import mujoco
+import numpy as np
 
 from mjlab.tasks.manipulation.mdp import LiftingCommandCfg
 from mjlab.asset_zoo.robots import (
@@ -148,7 +149,7 @@ def get_table_cylinder_spec() -> mujoco.MjSpec:
   spec = mujoco.MjSpec()
   body = spec.worldbody.add_body(name="table_cylinder")
   joint = body.add_freejoint(name="table_cylinder_joint")
-  joint.damping = 0.5
+  joint.damping = np.array([0.5, 0.5, 0.5])
   joint.armature = 0.001
   geom = body.add_geom(
     name="table_cylinder_geom",
@@ -386,6 +387,26 @@ def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
       "std": {"Waist_Z": 0.10, "Waist_Y": 0.10},
     },
   )
+  # 新增
+  # cfg.rewards["acdc_pose_quality_right"] = RewardTermCfg(
+  #   func=manipulation_mdp.acdc_pose_quality_reward,
+  #   weight=0.01,
+  #   params={
+  #     "asset_cfg": _right_arm_joint_cfg(),
+  #     "pose_std": 0.7,
+  #     "vel_std": 0.70,
+  #   },
+  # )
+  # cfg.rewards["acdc_pose_quality_left"] = RewardTermCfg(
+  #   func=manipulation_mdp.acdc_pose_quality_reward,
+  #   weight=0.01,
+  #   params={
+  #     "asset_cfg": _left_arm_joint_cfg(),
+  #     "pose_std": 0.7,
+  #     "vel_std": 0.70,
+  #   },
+  # )
+
   cfg.rewards["action_rate_l2"].weight = -0.002
 
   cfg.terminations["right_ee_table_collision"] = TerminationTermCfg(
@@ -538,6 +559,33 @@ def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
         ],
       },
     ),
+    # 新增
+    # "acdc_quality_schedule_right": CurriculumTermCfg(
+    #   func=manipulation_mdp.adaptive_lambda_quality_curriculum,
+    #   params={
+    #     "quality_reward_name": "acdc_pose_quality_right",
+    #     "command_name": "lift_height_right",
+    #     "low_success_threshold": 0.70,
+    #     "high_success_threshold": 0.90,
+    #     "smoothing_factor": 0.90,
+    #     "min_scale": 0.00,
+    #     "max_scale": 1.20,
+    #   },
+    # ),
+    # "acdc_quality_schedule_left": CurriculumTermCfg(
+    #   func=manipulation_mdp.adaptive_lambda_quality_curriculum,
+    #   params={
+    #     "quality_reward_name": "acdc_pose_quality_left",
+    #     "command_name": "lift_height_left",
+    #     "low_success_threshold": 0.65,
+    #     "high_success_threshold": 0.88,
+    #     "smoothing_factor": 0.90,
+    #     "min_scale": 0.00,
+    #     "max_scale": 1.20,
+    #   },
+    # ),
+
+
     "lift_command_schedule_right": CurriculumTermCfg(
       func=manipulation_mdp.lifting_command_curriculum,
       params={
@@ -558,7 +606,7 @@ def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             },
           },
           {
-            "step": 800 * 24,
+            "step": 1400 * 24,
             "success_threshold": 0.05,
             "target_position_range": {
               "x": _TARGET_X_RANGE_MID,
@@ -572,7 +620,7 @@ def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             },
           },
           {
-            "step": 2200 * 24,
+            "step": 2800 * 24,
             "success_threshold": 0.04,
             "target_position_range": {
               "x": _TARGET_X_RANGE,
@@ -608,7 +656,7 @@ def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             },
           },
           {
-            "step": 800 * 24,
+            "step": 1400 * 24,
             "success_threshold": 0.05,
             "target_position_range": {
               "x": _TARGET_X_RANGE_MID,
@@ -622,7 +670,7 @@ def wa1_d11_grasp_cylinder_env_cfg(play: bool = False) -> ManagerBasedRlEnvCfg:
             },
           },
           {
-            "step": 2200 * 24,
+            "step": 2800 * 24,
             "success_threshold": 0.04,
             "target_position_range": {
               "x": _TARGET_X_RANGE,

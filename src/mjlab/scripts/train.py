@@ -12,6 +12,7 @@ import tyro
 
 from mjlab.envs import ManagerBasedRlEnv, ManagerBasedRlEnvCfg
 from mjlab.rl import MjlabOnPolicyRunner, RslRlBaseRunnerCfg, RslRlVecEnvWrapper
+from mjlab.scripts._cli import maybe_print_top_level_help
 from mjlab.tasks.registry import list_tasks, load_env_cfg, load_rl_cfg, load_runner_cls
 from mjlab.tasks.tracking.mdp import MotionCommandCfg
 from mjlab.utils.gpu import select_gpus
@@ -76,6 +77,21 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
     motion_cmd = cfg.env.commands["motion"]
     assert isinstance(motion_cmd, MotionCommandCfg)
 
+    def _resolve_motion_file_from_dir(download_dir: Path) -> Path:
+      npz_files = sorted(download_dir.glob("*.npz"))
+      if len(npz_files) == 0:
+        raise FileNotFoundError(
+          f"No .npz motion file found in artifact dir: {download_dir}"
+        )
+      # Default to the latest motion when multiple files are present.
+      latest = max(npz_files, key=lambda p: (p.stat().st_mtime_ns, p.name))
+      if len(npz_files) > 1:
+        print(
+          "[INFO] Multiple .npz files found; using latest: "
+          f"{latest.name} (dir: {download_dir})"
+        )
+      return latest
+
     # Check if motion_file is already set (e.g., via CLI --env.commands.motion.motion-file).
     if motion_cmd.motion_file and Path(motion_cmd.motion_file).exists():
       print(f"[INFO] Using local motion file: {motion_cmd.motion_file}")
@@ -88,7 +104,9 @@ def run_train(task_id: str, cfg: TrainConfig, log_dir: Path) -> None:
 
       api = wandb.Api()
       artifact = api.artifact(registry_name)
-      motion_cmd.motion_file = str(Path(artifact.download()) / "motion.npz")
+      download_dir = Path(artifact.download())
+      motion_cmd.motion_file = str(_resolve_motion_file_from_dir(download_dir))
+      print(f"[INFO] Using motion file from artifact: {motion_cmd.motion_file}")
     else:
       raise ValueError(
         "For tracking tasks, provide either:\n"
@@ -227,6 +245,8 @@ def launch_training(task_id: str, args: TrainConfig | None = None):
 
 
 def main():
+  maybe_print_top_level_help("train")
+
   # Parse first argument to choose the task.
   # Import tasks to populate the registry.
   import mjlab.tasks  # noqa: F401

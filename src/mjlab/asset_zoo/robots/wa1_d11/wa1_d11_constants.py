@@ -12,7 +12,7 @@ from mjlab.entity import EntityArticulationInfoCfg, EntityCfg
 from mjlab.utils.os import update_assets
 
 WA1_D11_XML_ENV_VAR = "MJLAB_WA1_D11_XML"
-_DEFAULT_WA1_D11_XML = Path("/home/robot706/yx/mjlab_v5/src/mjlab/asset_zoo/robots/wa1_d11/xml/WA1_D11.xml")
+_DEFAULT_WA1_D11_XML = Path("/home/yuxuan/project/mjlab_v5/src/mjlab/asset_zoo/robots/wa1_d11/xml/WA1_D11.xml")
 
 WA1_TRACK_BODY_NAMES = (
   "BODY",

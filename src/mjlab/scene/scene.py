@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import shutil
 import warnings
-import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -13,12 +11,11 @@ import numpy as np
 import torch
 
 from mjlab.entity import Entity, EntityCfg
-from mjlab.sensor import BuiltinSensor, Sensor, SensorCfg
+from mjlab.sensor import BuiltinSensor, RayCastSensor, Sensor, SensorCfg
 from mjlab.sensor.camera_sensor import CameraSensor
-from mjlab.sensor.raycast_sensor import RayCastSensor
 from mjlab.sensor.sensor_context import SensorContext
 from mjlab.terrains.terrain_entity import TerrainEntity, TerrainEntityCfg
-from mjlab.utils.xml import fix_spec_xml, strip_buffer_textures
+from mjlab.utils.spec import export_spec, non_default_option_fields
 
 _SCENE_XML = Path(__file__).parent / "scene.xml"
 
@@ -76,34 +73,16 @@ class Scene:
   def write(self, output_dir: Path, *, zip: bool = False) -> None:
     """Write the scene XML and mesh assets to a directory.
 
-    Creates ``scene.xml`` and an ``assets/`` subdirectory containing
-    all mesh files referenced by the spec. When *zip* is True the
-    directory is compressed into a ``.zip`` archive and the directory
-    is removed. Operates on a copy of the spec to avoid mutation.
+    Creates ``scene.xml`` and an ``assets/`` subdirectory containing mesh files
+    referenced by the scene. When *zip* is True the directory is compressed into a
+    ``.zip`` archive and the directory is removed. Operates on a copy of the spec to
+    avoid mutation.
 
     Args:
       output_dir: Destination directory (created if it doesn't exist).
       zip: If True, produce ``<output_dir>.zip`` instead of a directory.
     """
-    output_dir.mkdir(parents=True, exist_ok=True)
-    tmp = self._spec.copy()
-    strip_buffer_textures(tmp)
-    xml = fix_spec_xml(tmp.to_xml(), meshdir="assets")
-    (output_dir / "scene.xml").write_text(xml)
-    assets_dir = output_dir / "assets"
-    assets_dir.mkdir(parents=True, exist_ok=True)
-    for name, data in tmp.assets.items():
-      clean = name.removeprefix("assets/")
-      path = assets_dir / clean
-      path.parent.mkdir(parents=True, exist_ok=True)
-      path.write_bytes(data)
-    if zip:
-      zip_path = output_dir.with_suffix(".zip")
-      with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        for file in sorted(output_dir.rglob("*")):
-          if file.is_file():
-            zf.write(file, file.relative_to(output_dir))
-      shutil.rmtree(output_dir)
+    export_spec(self._spec, output_dir, zip=zip)
 
   def to_zip(self, path: Path) -> None:
     """Deprecated. Use ``write(output_dir, zip=True)`` instead."""
@@ -234,6 +213,14 @@ class Scene:
         key_qpos.append(np.array(ent.spec.keys[0].qpos))
         key_ctrl.append(np.array(ent.spec.keys[0].ctrl))
         ent.spec.delete(ent.spec.keys[0])
+      non_default = non_default_option_fields(ent.spec.option)
+      if non_default:
+        fields = ", ".join(non_default)
+        warnings.warn(
+          f"Entity '{ent_name}' has non-default <option> fields ({fields}) that will"
+          " not be propagated by MjSpec.attach(). Use MujocoCfg instead.",
+          stacklevel=2,
+        )
       frame = self._spec.worldbody.add_frame()
       self._spec.attach(ent.spec, prefix=f"{ent_name}/", frame=frame)
     # Add merged keyframe to scene spec.
@@ -254,6 +241,14 @@ class Scene:
     terrain = TerrainEntity(self._cfg.terrain, device=self._device)
     self._terrain = terrain
     self._entities["terrain"] = terrain
+    non_default = non_default_option_fields(terrain.spec.option)
+    if non_default:
+      fields = ", ".join(non_default)
+      warnings.warn(
+        f"Terrain has non-default <option> fields ({fields}) that will not be"
+        " propagated by MjSpec.attach(). Use MujocoCfg instead.",
+        stacklevel=2,
+      )
     frame = self._spec.worldbody.add_frame()
     self._spec.attach(terrain.spec, prefix="", frame=frame)
 
@@ -261,7 +256,7 @@ class Scene:
     for sensor_cfg in self._cfg.sensors:
       sns = sensor_cfg.build()
       sns.edit_spec(self._spec, self._entities)
-      self._sensors[sensor_cfg.name] = sns
+      self._sensors[sensor_cfg.prefixed_name] = sns
 
     for sns in self._spec.sensors:
       if sns.name not in self._sensors:

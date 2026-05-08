@@ -4,7 +4,6 @@ from typing import Any, Dict
 
 import yaml
 
-
 def update_assets(
   assets: Dict[str, Any],
   path: str | Path,
@@ -32,7 +31,6 @@ def update_assets(
       assets[asset_key] = f.read_bytes()
     elif f.is_dir() and recursive:
       update_assets(assets, f, meshdir, glob, recursive)
-
 
 def dump_yaml(filename: Path, data: Dict, sort_keys: bool = False) -> None:
   """Saves data to a YAML file.
@@ -107,7 +105,9 @@ def get_wandb_checkpoint_path(
   api = wandb.Api()
   wandb_run = api.run(str(run_path))
   files = [
-    file.name for file in wandb_run.files() if re.match(r"^model_\d+\.pt$", file.name)
+    file.name
+    for file in wandb_run.files(pattern="model_%.pt")
+    if re.match(r"^model_\d+\.pt$", file.name)
   ]
   if checkpoint_name is None:
     checkpoint_file = max(files, key=lambda x: int(x.split("_")[1].split(".")[0]))

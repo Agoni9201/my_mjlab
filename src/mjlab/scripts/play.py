@@ -3,7 +3,9 @@
 import os
 import re
 import sys
+import time as _time
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 
@@ -12,12 +14,21 @@ import tyro
 
 from mjlab.envs import ManagerBasedRlEnv
 from mjlab.rl import MjlabOnPolicyRunner, RslRlVecEnvWrapper
+from mjlab.scripts._cli import maybe_print_top_level_help
 from mjlab.tasks.registry import list_tasks, load_env_cfg, load_rl_cfg, load_runner_cls
 from mjlab.tasks.tracking.mdp import MotionCommandCfg
 from mjlab.utils.os import get_wandb_checkpoint_path
 from mjlab.utils.torch import configure_torch_backends
 from mjlab.utils.wrappers import VideoRecorder
 from mjlab.viewer import NativeMujocoViewer, ViserPlayViewer
+from mjlab.viewer.viser.viewer import CheckpointManager, format_time_ago
+
+
+def _parse_wandb_dt(value: str | datetime) -> datetime:
+  """Parse a W&B datetime string (or pass through a datetime object)."""
+  if isinstance(value, str):
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+  return value
 
 
 @dataclass(frozen=True)
@@ -37,6 +48,10 @@ class PlayConfig:
   video_width: int | None = None
   camera: int | str | None = None
   viewer: Literal["auto", "native", "viser"] = "auto"
+  playback_speed: float = 1.0
+  """Playback speed multiplier (e.g., 5.0 means 5x faster than real time)."""
+  viewer_frame_rate: float | None = None
+  """Viewer render FPS. Lower values can improve Actual RT under heavy rendering load."""
   play_stage: Literal["default", "match_checkpoint", "easy", "mid", "final"] = "default"
   no_terminations: bool = False
   """Disable all termination conditions (useful for viewing motions with dummy agents)."""
@@ -44,10 +59,8 @@ class PlayConfig:
   """Print left/right grasp contact force during play for diagnostics."""
   contact_print_interval: int = 10
   """Number of env steps between force printouts."""
-
   # Internal flag used by demo script.
   _demo_mode: tyro.conf.Suppress[bool] = False
-
 
 class _ContactForceDebugPolicy:
   """Policy wrapper that periodically prints grasp contact forces."""
@@ -168,9 +181,15 @@ class _ContactForceDebugPolicy:
       return "抬不动"
     return "抬起来"
 
-
 def run_play(task_id: str, cfg: PlayConfig):
   configure_torch_backends()
+
+  if cfg.playback_speed <= 0.0:
+    raise ValueError(f"`playback_speed` must be > 0, got {cfg.playback_speed}.")
+  if cfg.viewer_frame_rate is not None and cfg.viewer_frame_rate <= 0.0:
+    raise ValueError(
+      f"`viewer_frame_rate` must be > 0, got {cfg.viewer_frame_rate}."
+    )
 
   device = cfg.device or ("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -200,10 +219,91 @@ def run_play(task_id: str, cfg: PlayConfig):
     motion_cmd = env_cfg.commands["motion"]
     assert isinstance(motion_cmd, MotionCommandCfg)
 
+    def _resolve_existing_motion_file(path_value: str | None) -> Path | None:
+      if path_value is None or path_value == "":
+        return None
+      raw = Path(path_value).expanduser()
+      candidates = [raw]
+      if not raw.is_absolute():
+        # Allow relative paths from cwd and from repo root.
+        candidates.append((Path.cwd() / raw).resolve())
+        repo_root = Path(__file__).resolve().parents[3]
+        candidates.append((repo_root / raw).resolve())
+      for candidate in candidates:
+        if candidate.exists():
+          return candidate.resolve()
+      return None
+
+    def _resolve_motion_file_from_dir(download_dir: Path) -> Path:
+      npz_files = sorted(download_dir.glob("*.npz"))
+      if len(npz_files) == 0:
+        raise FileNotFoundError(
+          f"No .npz motion file found in artifact dir: {download_dir}"
+        )
+      latest = max(npz_files, key=lambda p: (p.stat().st_mtime_ns, p.name))
+      if len(npz_files) > 1:
+        print(
+          "[INFO] Multiple .npz files found; using latest: "
+          f"{latest.name} (dir: {download_dir})"
+        )
+      return latest
+
+    def _infer_motion_file_from_checkpoint(checkpoint_file: str | None) -> Path | None:
+      if checkpoint_file is None:
+        return None
+      ckpt_path = Path(checkpoint_file).expanduser()
+      ckpt_dir = ckpt_path.parent
+
+      # Preferred source: serialized env config written during training.
+      env_cfg_paths = [ckpt_dir / "params" / "env.yaml", ckpt_dir / "env.yaml"]
+      for env_cfg_path in env_cfg_paths:
+        if not env_cfg_path.exists():
+          continue
+        try:
+          text = env_cfg_path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+          continue
+        match = re.search(r"^\s*motion_file:\s*(.+?)\s*$", text, flags=re.MULTILINE)
+        if match is None:
+          continue
+        motion_path_raw = match.group(1).strip().strip("'\"")
+        resolved = _resolve_existing_motion_file(motion_path_raw)
+        if resolved is not None:
+          return resolved
+
+      # Last resort: search nearby directories for .npz motions.
+      repo_root = Path(__file__).resolve().parents[3]
+      search_patterns: list[tuple[Path, str]] = [
+        (ckpt_dir, "*.npz"),
+        (ckpt_dir.parent, "*.npz"),
+        (repo_root / "artifacts", "**/*.npz"),
+      ]
+      candidates: list[Path] = []
+      for base_dir, pattern in search_patterns:
+        if not base_dir.exists():
+          continue
+        candidates.extend([p for p in base_dir.glob(pattern) if p.is_file()])
+
+      if len(candidates) == 0:
+        return None
+      return max(candidates, key=lambda p: (p.stat().st_mtime_ns, p.name)).resolve()
+
+    resolved_cli_motion = _resolve_existing_motion_file(cfg.motion_file)
+    resolved_cfg_motion = _resolve_existing_motion_file(motion_cmd.motion_file)
+
     # Check for local motion file first (works for both dummy and trained modes).
-    if cfg.motion_file is not None and Path(cfg.motion_file).exists():
-      print(f"[INFO]: Using local motion file: {cfg.motion_file}")
-      motion_cmd.motion_file = cfg.motion_file
+    if resolved_cli_motion is not None:
+      print(f"[INFO]: Using local motion file: {resolved_cli_motion}")
+      motion_cmd.motion_file = str(resolved_cli_motion)
+    elif cfg.motion_file is not None:
+      raise FileNotFoundError(
+        "Motion file from CLI does not exist: "
+        f"{cfg.motion_file}. "
+        "Please pass a valid --motion-file path."
+      )
+    elif resolved_cfg_motion is not None:
+      print(f"[INFO]: Using motion file from env config: {resolved_cfg_motion}")
+      motion_cmd.motion_file = str(resolved_cfg_motion)
     elif DUMMY_MODE:
       if not cfg.registry_name:
         raise ValueError(
@@ -219,28 +319,41 @@ def run_play(task_id: str, cfg: PlayConfig):
 
       api = wandb.Api()
       artifact = api.artifact(registry_name)
-      motion_cmd.motion_file = str(Path(artifact.download()) / "motion.npz")
+      motion_cmd.motion_file = str(
+        _resolve_motion_file_from_dir(Path(artifact.download()))
+      )
     else:
-      if cfg.motion_file is not None:
-        print(f"[INFO]: Using motion file from CLI: {cfg.motion_file}")
-        motion_cmd.motion_file = cfg.motion_file
-      else:
+      inferred_ckpt_motion = _infer_motion_file_from_checkpoint(cfg.checkpoint_file)
+      if inferred_ckpt_motion is not None:
+        print(f"[INFO]: Using motion file inferred from checkpoint: {inferred_ckpt_motion}")
+        motion_cmd.motion_file = str(inferred_ckpt_motion)
+      elif cfg.wandb_run_path is not None:
         import wandb
 
         api = wandb.Api()
-        if cfg.wandb_run_path is None and cfg.checkpoint_file is not None:
-          raise ValueError(
-            "Tracking tasks require `motion_file` when using `checkpoint_file`, "
-            "or provide `wandb_run_path` so the motion artifact can be resolved."
-          )
-        if cfg.wandb_run_path is not None:
-          wandb_run = api.run(str(cfg.wandb_run_path))
-          art = next(
-            (a for a in wandb_run.used_artifacts() if a.type == "motions"), None
-          )
-          if art is None:
-            raise RuntimeError("No motion artifact found in the run.")
-          motion_cmd.motion_file = str(Path(art.download()) / "motion.npz")
+        wandb_run = api.run(str(cfg.wandb_run_path))
+        art = next((a for a in wandb_run.used_artifacts() if a.type == "motions"), None)
+        if art is None:
+          raise RuntimeError("No motion artifact found in the run.")
+        motion_cmd.motion_file = str(_resolve_motion_file_from_dir(Path(art.download())))
+
+      elif cfg.checkpoint_file is not None:
+        raise ValueError(
+          "Tracking tasks require `motion_file` when using `checkpoint_file`, "
+          "or provide `wandb_run_path` so the motion artifact can be resolved. "
+          "Tried local checkpoint metadata but no valid motion file was found."
+        )
+      else:
+        raise ValueError(
+          "Tracking tasks require a valid motion source. Provide one of:\n"
+          "  --motion-file /path/to/motion.npz\n"
+          "  --registry-name your-org/motions/motion-name (dummy mode)\n"
+          "  --wandb-run-path entity/project/run_id (trained mode)"
+        )
+
+      if cfg.wandb_run_path is None and cfg.checkpoint_file is None and inferred_ckpt_motion is None:
+        # Keep explicit coverage for impossible branch under current checks.
+        raise RuntimeError("Failed to resolve motion source for tracking play.")
 
   log_dir: Path | None = None
   resume_path: Path | None = None
@@ -348,7 +461,7 @@ def run_play(task_id: str, cfg: PlayConfig):
       str(resume_path), load_cfg={"actor": True}, strict=True, map_location=device
     )
     policy = runner.get_inference_policy(device=device)
-
+  
   if cfg.print_grasp_contact_force:
     scene_sensors = env.unwrapped.scene.sensors
     required = {"right_grasp_contact", "left_grasp_contact"}
@@ -360,12 +473,84 @@ def run_play(task_id: str, cfg: PlayConfig):
       )
       print(
         "[INFO]: Grasp contact force debug enabled "
-        f"(interval={max(1, cfg.contact_print_interval)} steps)"
-      )
+        f"(interval={max(1, cfg.contact_print_interval)} steps)")
     else:
       print(
         "[WARN]: Grasp contact force debug requested, but required sensors "
-        f"are missing. Available sensors: {list(scene_sensors.keys())}"
+        f"are missing. Available sensors: {list(scene_sensors.keys())}")
+
+
+
+  # Build checkpoint manager for hot-swapping checkpoints in the viewer.
+  ckpt_manager: CheckpointManager | None = None
+  if TRAINED_MODE and resume_path is not None:
+    _ckpt_runner = runner  # pyright: ignore[reportPossiblyUnboundVariable]
+
+    def _reload_policy(path: str):
+      _ckpt_runner.load(
+        path,
+        load_cfg={"actor": True},
+        strict=True,
+        map_location=device,
+      )
+      return _ckpt_runner.get_inference_policy(device=device)
+
+    if cfg.wandb_run_path is None:
+      ckpt_dir = resume_path.parent
+
+      def fetch_available_local() -> list[tuple[str, str]]:
+        now = _time.time()
+        entries: list[tuple[str, str, int]] = []
+        for f in sorted(ckpt_dir.glob("*.pt")):
+          try:
+            step = int(f.stem.split("_")[1])
+          except (IndexError, ValueError):
+            step = 0
+          ago = format_time_ago(int(now - f.stat().st_mtime))
+          entries.append((f.name, ago, step))
+        entries.sort(key=lambda x: x[2])
+        return [(name, t) for name, t, _ in entries]
+
+      ckpt_manager = CheckpointManager(
+        current_name=resume_path.name,
+        fetch_available=fetch_available_local,
+        load_checkpoint=lambda name: _reload_policy(str(ckpt_dir / name)),
+      )
+    else:
+      import wandb
+
+      api = wandb.Api()
+      run_path = str(cfg.wandb_run_path)
+      wandb_run = api.run(run_path)
+      _log_root = log_root_path  # pyright: ignore[reportPossiblyUnboundVariable]
+
+      def fetch_available_wandb() -> list[tuple[str, str]]:
+        wandb_run.load()
+        now = datetime.now(tz=timezone.utc)
+        entries: list[tuple[str, str, int]] = []
+        for f in wandb_run.files():
+          if not f.name.endswith(".pt"):
+            continue
+          try:
+            step = int(f.name.split("_")[1].split(".")[0])
+          except (IndexError, ValueError):
+            step = 0
+          ago = format_time_ago(
+            int((now - _parse_wandb_dt(f.updated_at)).total_seconds())
+          )
+          entries.append((f.name, ago, step))
+        entries.sort(key=lambda x: x[2])
+        return [(name, t) for name, t, _ in entries]
+
+      ckpt_manager = CheckpointManager(
+        current_name=resume_path.name,
+        fetch_available=fetch_available_wandb,
+        load_checkpoint=lambda name: _reload_policy(
+          str(get_wandb_checkpoint_path(_log_root, Path(run_path), name)[0])
+        ),
+        run_name=_parse_wandb_dt(wandb_run.created_at).strftime("%Y-%m-%d_%H-%M-%S"),
+        run_url=wandb_run.url,
+        run_status=wandb_run.state,
       )
 
   # Handle "auto" viewer selection.
@@ -377,16 +562,33 @@ def run_play(task_id: str, cfg: PlayConfig):
     resolved_viewer = cfg.viewer
 
   if resolved_viewer == "native":
-    NativeMujocoViewer(env, policy).run()
+    viewer = NativeMujocoViewer(
+      env,
+      policy,
+      frame_rate=cfg.viewer_frame_rate or 60.0,
+    )
   elif resolved_viewer == "viser":
-    ViserPlayViewer(env, policy).run()
+    viewer = ViserPlayViewer(
+      env,
+      policy,
+      frame_rate=cfg.viewer_frame_rate or 30.0,
+      checkpoint_manager=ckpt_manager,
+    )
   else:
     raise RuntimeError(f"Unsupported viewer backend: {resolved_viewer}")
+
+  if cfg.playback_speed != 1.0:
+    viewer.set_speed(cfg.playback_speed)
+    print(f"[INFO]: Playback speed set to {cfg.playback_speed:g}x")
+
+  viewer.run()
 
   env.close()
 
 
 def main():
+  maybe_print_top_level_help("play")
+
   # Parse first argument to choose the task.
   # Import tasks to populate the registry.
   import mjlab.tasks  # noqa: F401

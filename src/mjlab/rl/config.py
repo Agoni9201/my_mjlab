@@ -28,8 +28,14 @@ class RslRlModelCfg:
 
   ``None`` means deterministic output (use for critic).
   """
+  rnn_type: str | None = None
+  """RNN type ("lstm" or "gru"). When set, class_name should be "RNNModel"."""
+  rnn_hidden_dim: int = 256
+  """Hidden state dimension for the RNN."""
+  rnn_num_layers: int = 1
+  """Number of stacked RNN layers."""
   class_name: str = "MLPModel"
-  """Model class name resolved by RSL-RL (MLPModel or CNNModel)."""
+  """Model class name resolved by RSL-RL (MLPModel, CNNModel, or RNNModel)."""
 
 
 @dataclass
@@ -116,6 +122,30 @@ class RslRlBaseRunnerCfg:
   upload_model: bool = True
   """Whether to upload model files (.pt, .onnx) to W&B on save. Set to
   False to keep metric logging but avoid storage usage. Default is True."""
+  teacher_checkpoint_file: str | None = None
+  """Optional teacher policy checkpoint path for action-guidance distillation."""
+  teacher_task_id: str | None = None
+  """Task ID used to construct teacher policy and observations."""
+  teacher_motion_file: str | None = None
+  """Optional motion file override for tracking-style teacher tasks."""
+  teacher_guidance_weight: float = 0.0
+  """Base weight of teacher guidance reward; 0 disables guidance."""
+  teacher_guidance_std: float = 0.35
+  """Gaussian bandwidth for teacher action matching reward."""
+  teacher_dist_far: float = 0.20
+  """Distance where approach guidance is fully enabled."""
+  teacher_dist_near: float = 0.08
+  """Distance where approach guidance fades out."""
+  teacher_release_height: float = 0.04
+  """Lift height above table-center that relaxes guidance."""
+  teacher_post_grasp_scale: float = 0.03
+  """Residual guidance scale after contact or lift."""
+  teacher_contact_force_threshold: float = 0.35
+  """Contact force threshold for switching to post-grasp guidance scale."""
+  teacher_anneal_start_iter: int = 0
+  """Iteration where teacher guidance annealing starts."""
+  teacher_anneal_end_iter: int = 1500
+  """Iteration where teacher guidance annealing reaches zero."""
 
 
 @dataclass

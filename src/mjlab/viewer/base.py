@@ -141,6 +141,7 @@ class ViewerAction(Enum):
   TOGGLE_PLOTS = "toggle_plots"
   TOGGLE_DEBUG_VIS = "toggle_debug_vis"
   TOGGLE_SHOW_ALL_ENVS = "toggle_show_all_envs"
+  FETCH_CHECKPOINT = "fetch_checkpoint"
   CUSTOM = "custom"
 
 
@@ -256,6 +257,16 @@ class BaseViewer(ABC):
   def reset_speed(self) -> None:
     self._speed_index = self.SPEED_MULTIPLIERS.index(1.0)
     self._time_multiplier = 1.0
+
+  def set_speed(self, multiplier: float) -> None:
+    if multiplier <= 0.0:
+      raise ValueError(f"Speed multiplier must be > 0, got {multiplier}.")
+    self._time_multiplier = float(multiplier)
+    # Keep speed up/down controls working by anchoring to the closest preset step.
+    self._speed_index = min(
+      range(len(self.SPEED_MULTIPLIERS)),
+      key=lambda idx: abs(self.SPEED_MULTIPLIERS[idx] - self._time_multiplier),
+    )
 
   # Pause and resume.
 

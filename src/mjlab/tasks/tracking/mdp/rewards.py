@@ -113,6 +113,7 @@ def motion_global_body_angular_velocity_error_exp(
   return torch.exp(-error.mean(-1) / std**2)
 
 
+
 def motion_joint_position_error_exp(
   env: ManagerBasedRlEnv,
   command_name: str,
@@ -131,6 +132,7 @@ def motion_joint_velocity_error_exp(
   command = cast(MotionCommand, env.command_manager.get_term(command_name))
   error = torch.sum(torch.square(command.joint_vel - command.robot_joint_vel), dim=-1)
   return torch.exp(-error / std**2)
+
 
 
 def self_collision_cost(

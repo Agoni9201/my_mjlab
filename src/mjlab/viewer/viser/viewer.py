@@ -6,19 +6,25 @@ Adapted from an MJX visualizer by Chung Min Kim: https://github.com/chungmin99/
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from enum import Enum, auto
-from threading import Lock
+from threading import Event, Lock
+from typing import Any, Optional
 
+import torch
 import viser
 from typing_extensions import override
 
+from mjlab.sensor.raycast_sensor import RayCastSensor
 from mjlab.sim.sim import Simulation
 from mjlab.viewer.base import (
   BaseViewer,
   EnvProtocol,
   PolicyProtocol,
   VerbosityLevel,
+  ViewerAction,
 )
 from mjlab.viewer.viser.overlays import (
   ViserCameraOverlays,
@@ -26,7 +32,27 @@ from mjlab.viewer.viser.overlays import (
   ViserDebugOverlays,
   ViserTermOverlays,
 )
-from mjlab.viewer.viser.scene import ViserMujocoScene
+from mjlab.viewer.viser.scene import MjlabViserScene
+
+
+@dataclass
+class CheckpointManager:
+  """Holds checkpoint discovery and loading callbacks for the viewer."""
+
+  current_name: str
+  fetch_available: Callable[[], list[tuple[str, str]]]
+  load_checkpoint: Callable[[str], PolicyProtocol]
+  run_name: str | None = None
+  run_url: str | None = None
+  run_status: str | None = None
+
+
+def format_time_ago(seconds: int) -> str:
+  """Format a duration in seconds as a human-readable time-ago string."""
+  for div, unit in ((86400, "d"), (3600, "h"), (60, "m")):
+    if seconds >= div:
+      return f"{seconds // div}{unit} ago"
+  return f"{seconds}s ago"
 
 
 class UpdateReason(Enum):
@@ -45,8 +71,10 @@ class ViserPlayViewer(BaseViewer):
     frame_rate: float = 60.0,
     verbosity: VerbosityLevel = VerbosityLevel.SILENT,
     viser_server: viser.ViserServer | None = None,
+    checkpoint_manager: CheckpointManager | None = None,
   ) -> None:
     super().__init__(env, policy, frame_rate, verbosity)
+    self._ckpt_mgr = checkpoint_manager
     self._term_overlays: ViserTermOverlays | None = None
     self._camera_overlays: ViserCameraOverlays | None = None
     self._debug_overlays: ViserDebugOverlays | None = None
@@ -70,8 +98,8 @@ class ViserPlayViewer(BaseViewer):
     self._counter = 0
     self._pending_update_reasons: set[UpdateReason] = set()
 
-    # Create ViserMujocoScene for all 3D visualization (with debug visualization enabled).
-    self._scene = ViserMujocoScene.create(
+    # Create MjlabViserScene for all 3D visualization (with debug visualization enabled).
+    self._scene = MjlabViserScene(
       server=self._server,
       mj_model=sim.mj_model,
       num_envs=self.env.num_envs,
@@ -139,14 +167,23 @@ class ViserPlayViewer(BaseViewer):
       env = self.env.unwrapped
       if env.command_manager.active_terms:
         with self._server.gui.add_folder("Commands"):
-          env.command_manager.create_gui(self._server, lambda: self._scene.env_idx)
+          env.command_manager.create_gui(
+            self._server,
+            lambda: self._scene.env_idx,
+            on_change=self._scene.request_update,
+            request_action=self.request_action,
+          )
 
-      # Add standard visualization options from ViserMujocoScene.
+      # Add standard visualization options from MjlabViserScene.
       def _debug_viz_extra() -> None:
-        env.command_manager.create_debug_vis_gui(self._server)
+        env.command_manager.create_debug_vis_gui(
+          self._server, on_change=self._scene.request_update
+        )
+        self._create_sensor_debug_vis_gui()
+        self._create_reward_debug_vis_gui()
 
       with self._server.gui.add_folder("Scene"):
-        self._scene.create_visualization_gui(
+        self._scene.create_scene_gui(
           camera_distance=self.cfg.distance,
           camera_azimuth=self.cfg.azimuth,
           camera_elevation=self.cfg.elevation,
@@ -160,6 +197,10 @@ class ViserPlayViewer(BaseViewer):
 
     self._prev_env_idx = self._scene.env_idx
 
+    # Visualization tab (overlay controls: contacts, forces, inertia, etc.).
+    with tabs.add_tab("Visualization", icon=viser.Icon.EYE):
+      self._scene.create_overlay_gui()
+
     self._term_overlays = ViserTermOverlays(
       self._server, self.env, self._scene, self.frame_time
     )
@@ -167,8 +208,132 @@ class ViserPlayViewer(BaseViewer):
     self._debug_overlays = ViserDebugOverlays(self.env, self._scene)
     self._contact_overlays = ViserContactOverlays(self._scene)
 
-    # Groups tab (geoms and sites).
-    self._scene.create_groups_gui(tabs)
+    # Groups tab (geom/site/joint/tendon/actuator visibility).
+    with tabs.add_tab("Groups", icon=viser.Icon.LAYERS_INTERSECT):
+      self._scene.create_groups_gui()
+
+    # Checkpoints tab (optional, when checkpoint_manager is provided).
+    if self._ckpt_mgr is not None:
+      is_wandb = self._ckpt_mgr.run_url is not None
+      with tabs.add_tab("Checkpoints", icon=viser.Icon.DATABASE):
+        if is_wandb:
+          url = self._ckpt_mgr.run_url
+          self._server.gui.add_html(
+            '<div style="font-size:0.85em;line-height:1.25;'
+            'padding:0 1em 0.5em 1em;">'
+            "<strong>Source:</strong> W&B<br/>"
+            f"<strong>Run:</strong>"
+            f" {self._ckpt_mgr.run_name}<br/>"
+            f"<strong>Status:</strong>"
+            f" {self._ckpt_mgr.run_status}<br/>"
+            f'<a href="{url}" target="_blank"'
+            f' style="color:#3b82f6;">'
+            f"Open in W&B</a>"
+            "</div>"
+          )
+        else:
+          self._server.gui.add_html(
+            '<div style="font-size:0.85em;line-height:1.25;'
+            'padding:0 1em 0.5em 1em;">'
+            "<strong>Source:</strong> Local"
+            "</div>"
+          )
+
+        self._ckpt_dropdown = self._server.gui.add_dropdown(
+          "Checkpoint",
+          options=[self._ckpt_mgr.current_name],
+          initial_value=self._ckpt_mgr.current_name,
+        )
+        self._ckpt_user_event = Event()
+        self._ckpt_user_event.set()
+
+        @self._ckpt_dropdown.on_update
+        def _(_) -> None:
+          if self._ckpt_user_event.is_set():
+            self._actions.append((ViewerAction.FETCH_CHECKPOINT, "selected"))
+
+        ckpt_buttons = self._server.gui.add_button_group(
+          "",
+          options=["Sync", "Use Latest"],
+        )
+
+        @ckpt_buttons.on_click
+        def _(event) -> None:
+          if event.target.value == "Sync":
+            self._actions.append((ViewerAction.FETCH_CHECKPOINT, "refresh"))
+          else:
+            self._actions.append((ViewerAction.FETCH_CHECKPOINT, "latest"))
+
+      # Populate the dropdown on startup.
+      self._actions.append((ViewerAction.FETCH_CHECKPOINT, "refresh"))
+
+  @override
+  def _handle_custom_action(
+    self,
+    action: ViewerAction,
+    payload: Optional[Any],
+  ) -> bool:
+    if isinstance(payload, dict) and payload.get("type") == "gui_reset":
+      self._handle_gui_reset(payload.get("all_envs", False))
+      return True
+    if action != ViewerAction.FETCH_CHECKPOINT:
+      return False
+    if self._ckpt_mgr is None:
+      return True
+
+    if payload in ("refresh", "latest"):
+      entries = self._ckpt_mgr.fetch_available()
+      labels = [f"{n}  ({t})" if t else n for n, t in entries]
+      self._ckpt_user_event.clear()
+      self._ckpt_dropdown.options = labels
+      cur = next(
+        (lbl for lbl in labels if lbl.startswith(self._ckpt_mgr.current_name)),
+        self._ckpt_mgr.current_name,
+      )
+      self._ckpt_dropdown.value = cur
+      self._ckpt_user_event.set()
+      if payload == "refresh" or not entries:
+        return True
+      # "latest" -- select the last entry.
+      name = entries[-1][0]
+    else:
+      # "selected" -- extract name from dropdown label.
+      name = self._ckpt_dropdown.value.split("  (")[0]
+
+    if name != self._ckpt_mgr.current_name:
+      print(f"[INFO]: Loading {name}...")
+      self.policy = self._ckpt_mgr.load_checkpoint(name)
+      self._ckpt_mgr.current_name = name
+      self._ckpt_updating = True
+      cur = next(
+        (lbl for lbl in self._ckpt_dropdown.options if lbl.startswith(name)),
+        name,
+      )
+      self._ckpt_dropdown.value = cur
+      self._ckpt_user_event.set()
+      self.reset_environment()
+      print(f"[INFO]: Loaded {name}")
+    return True
+
+  def _handle_gui_reset(self, all_envs: bool) -> None:
+    """Reset environment(s) and apply GUI-selected command state."""
+    env = self.env.unwrapped
+    if all_envs:
+      env_ids = torch.arange(env.num_envs, dtype=torch.int64, device=env.device)
+    else:
+      env_ids = torch.tensor(
+        [self._scene.env_idx], dtype=torch.int64, device=env.device
+      )
+
+    with self._sim_lock:
+      env.reset(env_ids=env_ids)
+      if env.command_manager.apply_gui_reset(env_ids):
+        env.scene.write_data_to_sim()
+        env.sim.forward()
+        env.sim.sense()
+
+    self._pending_update_reasons.add(UpdateReason.ACTION)
+    self._sync_ui_state()
 
   @override
   def _process_actions(self) -> None:
@@ -186,6 +351,7 @@ class ViserPlayViewer(BaseViewer):
       viser.Icon.PLAYER_PLAY if self._is_paused else viser.Icon.PLAYER_PAUSE
     )
     self._update_status_display()
+    self.env.unwrapped.command_manager.on_viewer_pause(self._is_paused)
 
   def _update_env_dependent_plots(self) -> None:
     """Refresh reward/metric plots and histories for the selected environment."""
@@ -212,6 +378,43 @@ class ViserPlayViewer(BaseViewer):
         sim.data, self._scene.env_idx, self._scene._scene_offset
       )
     self._camera_update_last_ms = (time.perf_counter() - t0) * 1000.0
+
+  def _create_sensor_debug_vis_gui(self) -> None:
+    """Add per-sensor debug visualization checkboxes."""
+    env = self.env.unwrapped
+    vis_sensors = [
+      s
+      for s in env.scene.sensors.values()
+      if isinstance(s, RayCastSensor) and s.cfg.debug_vis
+    ]
+    if not vis_sensors:
+      return
+    for sensor in vis_sensors:
+      cb = self._server.gui.add_checkbox(
+        sensor.cfg.name,
+        initial_value=sensor._debug_vis_enabled,
+      )
+
+      def _on_update(_ev, _s=sensor, _cb=cb) -> None:
+        _s._debug_vis_enabled = _cb.value
+        self._scene.needs_update = True
+
+      cb.on_update(_on_update)
+
+  def _create_reward_debug_vis_gui(self) -> None:
+    """Add per-reward debug visualization checkboxes."""
+    env = self.env.unwrapped
+    for name, func in env.reward_manager.get_visualizable_terms():
+      cb = self._server.gui.add_checkbox(
+        name,
+        initial_value=func._debug_vis_enabled,
+      )
+
+      def _on_update(_ev, _f=func, _cb=cb) -> None:
+        _f._debug_vis_enabled = _cb.value
+        self._scene.request_update()
+
+      cb.on_update(_on_update)
 
   def _queue_debug_visualizers(self) -> None:
     """Queue environment-specific debug draw calls into the scene.
